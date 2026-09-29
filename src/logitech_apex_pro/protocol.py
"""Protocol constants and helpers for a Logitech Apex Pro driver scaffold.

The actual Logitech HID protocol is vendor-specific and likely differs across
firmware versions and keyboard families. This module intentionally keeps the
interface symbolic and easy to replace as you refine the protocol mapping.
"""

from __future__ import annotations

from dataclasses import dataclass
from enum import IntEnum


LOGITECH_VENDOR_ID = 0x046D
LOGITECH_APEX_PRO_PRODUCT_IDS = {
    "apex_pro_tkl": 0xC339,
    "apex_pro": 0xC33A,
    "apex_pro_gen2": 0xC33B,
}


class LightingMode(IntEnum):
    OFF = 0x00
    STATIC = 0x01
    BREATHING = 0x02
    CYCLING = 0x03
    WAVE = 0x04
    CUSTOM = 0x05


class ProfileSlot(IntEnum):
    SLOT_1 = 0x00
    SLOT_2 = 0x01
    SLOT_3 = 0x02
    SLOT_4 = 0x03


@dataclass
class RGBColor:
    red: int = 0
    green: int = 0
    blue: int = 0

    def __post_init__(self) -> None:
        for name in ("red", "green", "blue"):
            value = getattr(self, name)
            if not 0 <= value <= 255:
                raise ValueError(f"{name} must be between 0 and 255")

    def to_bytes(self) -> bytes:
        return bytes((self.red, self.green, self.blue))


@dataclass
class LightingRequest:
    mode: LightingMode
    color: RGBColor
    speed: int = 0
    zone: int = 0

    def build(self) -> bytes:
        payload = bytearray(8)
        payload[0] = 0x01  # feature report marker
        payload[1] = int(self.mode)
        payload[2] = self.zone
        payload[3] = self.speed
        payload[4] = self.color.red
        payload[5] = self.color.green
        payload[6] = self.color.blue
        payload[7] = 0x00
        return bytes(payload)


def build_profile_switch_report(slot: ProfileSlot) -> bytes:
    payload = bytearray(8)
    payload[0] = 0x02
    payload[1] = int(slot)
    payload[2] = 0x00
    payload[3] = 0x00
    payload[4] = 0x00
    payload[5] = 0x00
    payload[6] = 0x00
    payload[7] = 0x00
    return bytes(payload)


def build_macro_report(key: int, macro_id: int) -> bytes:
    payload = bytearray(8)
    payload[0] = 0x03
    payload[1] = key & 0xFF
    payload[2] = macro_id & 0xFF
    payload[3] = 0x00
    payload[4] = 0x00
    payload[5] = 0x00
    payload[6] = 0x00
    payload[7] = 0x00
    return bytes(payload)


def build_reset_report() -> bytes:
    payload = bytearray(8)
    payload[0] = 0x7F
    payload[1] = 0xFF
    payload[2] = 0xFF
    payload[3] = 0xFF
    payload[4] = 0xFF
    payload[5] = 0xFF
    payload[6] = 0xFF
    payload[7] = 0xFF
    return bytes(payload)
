@@ -1,0 +1,104 @@
+"""Low-level abstraction for Logitech HID keyboard devices."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class DeviceDescriptor:
+    vendor_id: int
+    product_id: int
+    manufacturer: str = ""
+    product: str = ""
+    serial: str = ""
+    path: str = ""
+
+
+class LogitechDevice:
+    """Minimal device abstraction used by the Apex Pro driver."""
+
+    def __init__(self, descriptor: DeviceDescriptor, handle: object | None = None):
+        self.descriptor = descriptor
+        self.handle = handle
+        self.connected = handle is not None
+
+    @property
+    def vid(self) -> int:
+        return self.descriptor.vendor_id
+
+    @property
+    def pid(self) -> int:
+        return self.descriptor.product_id
+
+    def read_feature(self, report_id: int, length: int = 64) -> bytes:
+        if self.handle is None:
+            raise RuntimeError("Device is not connected.")
+        try:
+            return self.handle.get_feature_report(report_id, length)
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(f"Failed to read HID feature report: {exc}") from exc
+
+    def write_feature(self, data: bytes) -> int:
+        if self.handle is None:
+            raise RuntimeError("Device is not connected.")
+        try:
+            return self.handle.send_feature_report(data)
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(f"Failed to write HID feature report: {exc}") from exc
+
+    def close(self) -> None:
+        self.connected = False
+        self.handle = None
+
+
+class HidNotAvailableError(RuntimeError):
+    """Raised when HID support is missing in the runtime."""
+
+
+try:  # pragma: no cover - optional dependency
+    import hid  # type: ignore
+except ImportError:  # pragma: no cover
+    hid = None
+
+
+def enumerate_logitech_devices(vendor_ids: tuple[int, ...] = (0x046D,)) -> list[LogitechDevice]:
+    """Enumerate Logitech HID devices if hidapi is available."""
+    if hid is None:
+        return []
+
+    devices: list[LogitechDevice] = []
+    for item in hid.enumerate():
+        vendor_id = item.get("vendor_id")
+        if vendor_id not in vendor_ids:
+            continue
+
+        descriptor = DeviceDescriptor(
+            vendor_id=int(vendor_id),
+            product_id=int(item.get("product_id", 0)),
+            manufacturer=str(item.get("manufacturer_string", "")),
+            product=str(item.get("product_string", "")),
+            serial=str(item.get("serial_number", "")),
+            path=str(item.get("path", "")),
+        )
+        devices.append(LogitechDevice(descriptor, None))
+    return devices
+
+
+def open_device_by_path(path: str) -> LogitechDevice:
+    """Open a device by HID path."""
+    if hid is None:
+        raise HidNotAvailableError("hidapi is not installed. Install with: pip install hidapi")
+
+    handle = hid.device()
+    handle.open_path(path)
+    descriptor = DeviceDescriptor(
+        vendor_id=int(handle.get_raw_product_string() and 0x046D),
+        product_id=0,
+        manufacturer="",
+        product="",
+        serial="",
+        path=path,
+    )
+    return LogitechDevice(descriptor, handle)
